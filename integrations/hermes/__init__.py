@@ -375,9 +375,12 @@ class AgentMemoryProvider(MemoryProvider):
                 "type": "fact",
             })
 
+
+
     def shutdown(self, **kwargs: Any) -> None:
         pass
 
 
 def register(ctx: Any) -> None:
-    ctx.register_memory_provider(AgentMemoryProvider())
+    provider = AgentMemoryProvider()
+    ctx.register_memory_provider(provider)

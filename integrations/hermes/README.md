@@ -14,7 +14,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/MCP-43_tools-1f6feb?style=flat-square" alt="43 MCP tools" />
-  <img src="https://img.shields.io/badge/Hooks-6_lifecycle-1f6feb?style=flat-square" alt="6 lifecycle hooks" />
+  <img src="https://img.shields.io/badge/Hooks-9_lifecycle-1f6feb?style=flat-square" alt="9 lifecycle hooks" />
   <img src="https://img.shields.io/badge/R@5-95.2%25-00875f?style=flat-square" alt="95.2% R@5" />
   <img src="https://img.shields.io/badge/Self--hosted-yes-00875f?style=flat-square" alt="Self-hosted" />
   <img src="https://img.shields.io/badge/License-Apache_2.0-blue?style=flat-square" alt="Apache 2.0" />
@@ -49,7 +49,7 @@ If I want deeper integration — pre-LLM context injection, turn-level
 capture, memory-write mirroring to MEMORY.md, and system prompt block
 injection — copy `integrations/hermes` from the agentmemory repo to
 `~/.hermes/plugins/agentmemory` instead. That gives me the
-6-hook memory provider plugin on top of the MCP server.
+9-hook memory provider plugin on top of the MCP server.
 ```
 
 That's it. Hermes handles the rest.
