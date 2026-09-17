@@ -4,10 +4,20 @@ import { readFileSync } from "node:fs";
 const expectedHermesHooks = [
   "prefetch",
   "sync_turn",
+  "on_session_start",
   "on_session_end",
   "on_pre_compress",
   "on_memory_write",
   "system_prompt_block",
+  "pre_tool_call",
+  "post_tool_call",
+  "pre_llm_call",
+  "post_llm_call",
+  "subagent_start",
+  "subagent_stop",
+  "on_session_finalize",
+  "on_session_reset",
+  "agent_loop_stopped",
 ];
 
 function readHermesPluginHooks(): string[] {
@@ -36,6 +46,13 @@ function isHermesLifecycleHook(methodName: string): boolean {
     methodName === "prefetch" ||
     methodName === "sync_turn" ||
     methodName === "system_prompt_block" ||
+    methodName === "pre_tool_call" ||
+    methodName === "post_tool_call" ||
+    methodName === "pre_llm_call" ||
+    methodName === "post_llm_call" ||
+    methodName === "subagent_start" ||
+    methodName === "subagent_stop" ||
+    methodName === "agent_loop_stopped" ||
     methodName.startsWith("on_")
   );
 }

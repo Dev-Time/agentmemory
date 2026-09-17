@@ -405,10 +405,122 @@ class AgentMemoryProvider(MemoryProvider):
                 "type": "fact",
             })
 
+    # ------------------------------------------------------------------
+    # Plugin-context hooks (ctx.register_hook) — feature parity with the
+    # Claude Code / Cursor / Copilot adapters, which feed agentmemory's
+    # 12 HookTypes. All telemetry is fire-and-forget (_api_bg) so no hook
+    # ever blocks or can fail the agent turn.
+    # ------------------------------------------------------------------
 
+    def on_session_start(self, **kwargs: Any) -> None:
+        # Agentmemory already gets this from initialize(); nothing extra to
+        # record here. Declared so the manifest lists every hook implemented.
+        pass
+
+    def pre_tool_call(self, tool_name: str = "", args: dict | None = None, **kwargs: Any) -> None:
+        _api_bg(self._base, "observe", self._payload("pre_tool_use", {
+            "tool_name": tool_name,
+            "tool_input": _trunc_json(args),
+        }))
+
+    def post_tool_call(self, tool_name: str = "", args: dict | None = None,
+                       outcome: Any = None, result: Any = None, **kwargs: Any) -> None:
+        # Hermes reports failures either via an {"error": ...} result or an
+        # outcome payload; mirror agentmemory's post_tool_use / post_tool_failure.
+        payload = outcome if isinstance(outcome, dict) else {}
+        if payload.get("status") in ("cancelled", "error") or (
+            isinstance(result, dict) and "error" in result
+        ):
+            error = payload.get("error") or (result.get("error") if isinstance(result, dict) else "")
+            _api_bg(self._base, "observe", self._payload("post_tool_failure", {
+                "tool_name": tool_name,
+                "tool_input": _trunc_json(args),
+                "error": str(error)[:4000],
+            }))
+            return
+        output = result if result is not None else payload.get("result")
+        _api_bg(self._base, "observe", self._payload("post_tool_use", {
+            "tool_name": tool_name,
+            "tool_input": args,
+            "tool_output": _trunc_str(output, 8000),
+        }))
+
+    def pre_llm_call(self, **kwargs: Any) -> None:
+        prompt = kwargs.get("prompt", "")
+        if not prompt:
+            messages = kwargs.get("messages")
+            if isinstance(messages, list) and messages:
+                last = messages[-1]
+                if isinstance(last, dict) and last.get("role") == "user":
+                    prompt = str(last.get("content", ""))
+        if prompt:
+            _api_bg(self._base, "observe", self._payload("prompt_submit", {
+                "prompt": _trunc_str(prompt, 8000),
+            }))
+
+    def post_llm_call(self, response: Any = None, **kwargs: Any) -> None:
+        # Anything agentmemory wants from the response side arrives via
+        # sync_turn; observing here would duplicate that capture.
+        pass
+
+    def subagent_start(self, **kwargs: Any) -> None:
+        _api_bg(self._base, "observe", self._payload("subagent_start", {
+            "agent_id": str(kwargs.get("subagent_id", kwargs.get("agent_id", ""))),
+            "agent_type": str(kwargs.get("role", kwargs.get("agent_type", "subagent"))),
+            "task": _trunc_str(kwargs.get("task", kwargs.get("goal", "")), 4000),
+        }))
+
+    def subagent_stop(self, **kwargs: Any) -> None:
+        _api_bg(self._base, "observe", self._payload("subagent_stop", {
+            "agent_id": str(kwargs.get("subagent_id", kwargs.get("agent_id", ""))),
+            "agent_type": str(kwargs.get("role", kwargs.get("agent_type", "subagent"))),
+            "last_message": _trunc_str(kwargs.get("summary", kwargs.get("last_message", "")), 4000),
+        }))
+
+    def on_session_finalize(self, **kwargs: Any) -> None:
+        _api(self._base, "session/end", {
+            "sessionId": kwargs.get("session_id", self._session_id),
+        })
+
+    def on_session_reset(self, **kwargs: Any) -> None:
+        # A /new-style reset kills the old session's context; marks it ended
+        # so agentmemory doesn't keep the dead session open.
+        _api_bg(self._base, "session/end", {
+            "sessionId": kwargs.get("old_session_id", kwargs.get("session_id", self._session_id)),
+        })
+
+    def agent_loop_stopped(self, **kwargs: Any) -> None:
+        pass
+
+    def _payload(self, hook_type: str, data: dict) -> dict:
+        return {
+            "hookType": hook_type,
+            "sessionId": getattr(self, "_session_id", ""),
+            "project": self._project,
+            "cwd": getattr(self, "_cwd", os.getcwd()),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "data": data,
+        }
 
     def shutdown(self, **kwargs: Any) -> None:
         pass
+
+
+def _trunc_str(value: Any, limit: int) -> Any:
+    if isinstance(value, str):
+        return value[:limit]
+    if value is None:
+        return ""
+    return str(value)[:limit]
+
+
+def _trunc_json(value: Any, limit: int = 4000) -> Any:
+    if value is None:
+        return ""
+    try:
+        return json.dumps(value)[:limit]
+    except (TypeError, ValueError):
+        return str(value)[:limit]
 
 
 def register(ctx: Any) -> None:

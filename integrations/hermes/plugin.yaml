@@ -6,7 +6,17 @@ homepage: "https://github.com/rohitg00/agentmemory"
 hooks:
   - prefetch
   - sync_turn
+  - on_session_start
   - on_session_end
   - on_pre_compress
   - on_memory_write
   - system_prompt_block
+  - pre_tool_call
+  - post_tool_call
+  - pre_llm_call
+  - post_llm_call
+  - subagent_start
+  - subagent_stop
+  - on_session_finalize
+  - on_session_reset
+  - agent_loop_stopped
