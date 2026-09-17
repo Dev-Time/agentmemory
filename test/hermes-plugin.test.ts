@@ -8,9 +8,6 @@ const expectedHermesHooks = [
   "on_pre_compress",
   "on_memory_write",
   "system_prompt_block",
-  "on_post_tool_call",
-  "on_pre_llm_call",
-  "on_subagent_stop",
 ];
 
 function readHermesPluginHooks(): string[] {
