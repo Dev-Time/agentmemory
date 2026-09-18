@@ -386,7 +386,11 @@ class AgentMemoryProvider(MemoryProvider):
             },
         })
 
-    def on_session_end(self, messages: list, **kwargs: Any) -> None:
+    # Dual-use: as a MemoryProvider method, memory_manager passes messages
+    # positionally; as a ctx.register_hook callback, Hermes fires this with
+    # keyword-only turn metadata (completed, failed, ..., session_id) and no
+    # messages. Make messages optional so the hook path works.
+    def on_session_end(self, messages: list | None = None, **kwargs: Any) -> None:
         _api(self._base, "session/end", {
             "sessionId": kwargs.get("session_id", self._session_id),
         })
