@@ -10,11 +10,15 @@ Requires agentmemory server running: npx @agentmemory/agentmemory
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import threading
 import subprocess
+from pathlib import Path
 from pathlib import PurePath
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_project(cwd: str) -> str:
@@ -526,3 +530,28 @@ def _trunc_json(value: Any, limit: int = 4000) -> Any:
 def register(ctx: Any) -> None:
     provider = AgentMemoryProvider()
     ctx.register_memory_provider(provider)
+    # Plugin.yaml's hooks: list is a manifest declaration only — Hermes does not
+    # auto-wire it. Each hook below must also be registered as a callback, or
+    # invoke_hook() finds no subscriber and the hook never fires. When this same
+    # module is also loaded through plugins/memory's provider collector, the
+    # fallback-hook dedupe (plugins_ledger._register_fallback_hook) makes those
+    # duplicate registrations inert rather than double-firing.
+    for _hook in (
+        "on_session_start",
+        "pre_tool_call",
+        "post_tool_call",
+        "pre_llm_call",
+        "post_llm_call",
+        "subagent_start",
+        "subagent_stop",
+        "on_session_finalize",
+        "on_session_reset",
+        "agent_loop_stopped",
+        "on_session_end",
+    ):
+        _cb = getattr(provider, _hook, None)
+        if callable(_cb):
+            try:
+                ctx.register_hook(_hook, _cb)
+            except Exception as exc:
+                logger.debug("agentmemory register_hook(%s) failed: %s", _hook, exc)
