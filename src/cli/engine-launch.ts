@@ -162,6 +162,8 @@ export function rewriteBundledConfig(
   const rendered = renderEngineConfig(raw, {
     dataDir: options?.dataDir ?? join(agentmemoryHome(home), "data"),
     ...(options?.ports ? { ports: options.ports } : {}),
+    ...(options?.stateBackend ? { stateBackend: options.stateBackend } : {}),
+    ...(options?.saveIntervalMs !== undefined ? { saveIntervalMs: options.saveIntervalMs } : {}),
   });
   return removeAgentmemoryExecCommand(rendered, nodeBin, workerEntry);
 }
@@ -186,4 +188,42 @@ export function legacyDataMigrations(
       to: join(resolvedDataDir, "stream_store"),
     },
   ];
+}
+
+export const ENGINE_MALLOC_ARENA_MAX = "2";
+
+export function engineChildEnv(
+  base: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, III_TELEMETRY_ENABLED: base["III_TELEMETRY_ENABLED"] ?? "false" };
+  if (platform === "linux" && !base.MALLOC_ARENA_MAX) {
+    env.MALLOC_ARENA_MAX = ENGINE_MALLOC_ARENA_MAX;
+  }
+  return env;
+}
+
+export type LaunchRenderFailure =
+  | { fatal: true; message: string }
+  | { fatal: false };
+
+export function resolveLaunchRenderFailure(
+  stateBackendKind: "file" | "redis",
+  err: unknown,
+): LaunchRenderFailure {
+  if (stateBackendKind !== "redis") return { fatal: false };
+  const reason = err instanceof Error ? err.message : String(err);
+  return {
+    fatal: true,
+    message:
+      `Failed to render the Redis state backend into the engine config: ${reason} ` +
+      "Refusing to start the engine, since it would silently fall back to the file (or in-memory) store instead of Redis. " +
+      "Fix the config or unset AGENTMEMORY_STATE_BACKEND to use the default file store.",
+  };
+}
+
+const CREDENTIAL_URL_PATTERN = /:\/\/[^@\s/]*@/g;
+
+export function redactCredentialUrls(text: string): string {
+  return text.replace(CREDENTIAL_URL_PATTERN, "://***@");
 }
