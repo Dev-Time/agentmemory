@@ -193,16 +193,65 @@ def _api(base: str, path: str, body: dict | None = None, method: str = "POST", s
     try:
         with urlopen(req, timeout=TIMEOUT) as resp:
             return json.loads(resp.read().decode())
-    except (URLError, TimeoutError, json.JSONDecodeError):
+    except Exception:
         return None
 
 
 def _api_bg(base: str, path: str, body: dict | None = None) -> None:
-    t = threading.Thread(target=_api, args=(base, path, body), daemon=True)
-    t.start()
+    try:
+        t = threading.Thread(target=_api, args=(base, path, body), daemon=True)
+        t.start()
+    except Exception as exc:
+        logger.debug("agentmemory _api_bg error: %s", exc)
 
 
 class AgentMemoryProvider(MemoryProvider):
+    _base_url: str | None = None
+    _session_id_val: str = ""
+    _cwd_val: str = ""
+    _project_val: str = ""
+
+    def __init__(self, **kwargs: Any) -> None:
+        try:
+            super().__init__()
+        except (TypeError, AttributeError):
+            pass
+        self._base = os.environ.get("AGENTMEMORY_URL", DEFAULT_BASE_URL)
+        self._session_id = kwargs.get("session_id", "")
+        self._cwd = kwargs.get("cwd", os.getcwd())
+        self._project = _resolve_project(self._cwd)
+
+    @property
+    def _base(self) -> str:
+        return self._base_url or os.environ.get("AGENTMEMORY_URL", DEFAULT_BASE_URL)
+
+    @_base.setter
+    def _base(self, value: str) -> None:
+        self._base_url = value
+
+    @property
+    def _session_id(self) -> str:
+        return self._session_id_val or ""
+
+    @_session_id.setter
+    def _session_id(self, value: str) -> None:
+        self._session_id_val = value or ""
+
+    @property
+    def _cwd(self) -> str:
+        return self._cwd_val or os.getcwd()
+
+    @_cwd.setter
+    def _cwd(self, value: str) -> None:
+        self._cwd_val = value or os.getcwd()
+
+    @property
+    def _project(self) -> str:
+        return self._project_val or _resolve_project(self._cwd)
+
+    @_project.setter
+    def _project(self, value: str) -> None:
+        self._project_val = value or ""
 
     @property
     def name(self) -> str:
@@ -210,7 +259,7 @@ class AgentMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         # Hermes contract: no network calls in is_available.
-        base = os.environ.get("AGENTMEMORY_URL", DEFAULT_BASE_URL)
+        base = os.environ.get("AGENTMEMORY_URL", self._base)
         return _validate_url(base)
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
@@ -391,9 +440,13 @@ class AgentMemoryProvider(MemoryProvider):
     # keyword-only turn metadata (completed, failed, ..., session_id) and no
     # messages. Make messages optional so the hook path works.
     def on_session_end(self, messages: list | None = None, **kwargs: Any) -> None:
-        _api(self._base, "session/end", {
-            "sessionId": kwargs.get("session_id", self._session_id),
-        })
+        try:
+            sess = kwargs.get("session_id") or self._session_id
+            _api(self._base, "session/end", {
+                "sessionId": sess,
+            })
+        except Exception as exc:
+            logger.debug("agentmemory on_session_end failed: %s", exc)
 
     def on_pre_compress(self, messages: list, **kwargs: Any) -> None:
         result = _api(self._base, "context", {
@@ -421,50 +474,64 @@ class AgentMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def on_session_start(self, **kwargs: Any) -> None:
-        # Agentmemory already gets this from initialize(); nothing extra to
-        # record here. Declared so the manifest lists every hook implemented.
-        pass
+        try:
+            if "session_id" in kwargs:
+                self._session_id = kwargs["session_id"]
+        except Exception:
+            pass
 
     def pre_tool_call(self, tool_name: str = "", args: dict | None = None, **kwargs: Any) -> None:
-        _api_bg(self._base, "observe", self._payload("pre_tool_use", {
-            "tool_name": tool_name,
-            "tool_input": _trunc_json(args),
-        }))
+        try:
+            sess = kwargs.get("session_id") or self._session_id
+            _api_bg(self._base, "observe", self._payload("pre_tool_use", {
+                "tool_name": tool_name,
+                "tool_input": _trunc_json(args),
+            }, session_id=sess))
+        except Exception as exc:
+            logger.debug("agentmemory pre_tool_call failed: %s", exc)
 
     def post_tool_call(self, tool_name: str = "", args: dict | None = None,
                        outcome: Any = None, result: Any = None, **kwargs: Any) -> None:
-        # Hermes reports failures either via an {"error": ...} result or an
-        # outcome payload; mirror agentmemory's post_tool_use / post_tool_failure.
-        payload = outcome if isinstance(outcome, dict) else {}
-        if payload.get("status") in ("cancelled", "error") or (
-            isinstance(result, dict) and "error" in result
-        ):
-            error = payload.get("error") or (result.get("error") if isinstance(result, dict) else "")
-            _api_bg(self._base, "observe", self._payload("post_tool_failure", {
+        try:
+            sess = kwargs.get("session_id") or self._session_id
+            # Hermes reports failures either via an {"error": ...} result or an
+            # outcome payload; mirror agentmemory's post_tool_use / post_tool_failure.
+            payload = outcome if isinstance(outcome, dict) else {}
+            if payload.get("status") in ("cancelled", "error") or (
+                isinstance(result, dict) and "error" in result
+            ):
+                error = payload.get("error") or (result.get("error") if isinstance(result, dict) else "")
+                _api_bg(self._base, "observe", self._payload("post_tool_failure", {
+                    "tool_name": tool_name,
+                    "tool_input": _trunc_json(args),
+                    "error": str(error)[:4000],
+                }, session_id=sess))
+                return
+            output = result if result is not None else payload.get("result")
+            _api_bg(self._base, "observe", self._payload("post_tool_use", {
                 "tool_name": tool_name,
-                "tool_input": _trunc_json(args),
-                "error": str(error)[:4000],
-            }))
-            return
-        output = result if result is not None else payload.get("result")
-        _api_bg(self._base, "observe", self._payload("post_tool_use", {
-            "tool_name": tool_name,
-            "tool_input": args,
-            "tool_output": _trunc_str(output, 8000),
-        }))
+                "tool_input": args,
+                "tool_output": _trunc_str(output, 8000),
+            }, session_id=sess))
+        except Exception as exc:
+            logger.debug("agentmemory post_tool_call failed: %s", exc)
 
     def pre_llm_call(self, **kwargs: Any) -> None:
-        prompt = kwargs.get("prompt", "")
-        if not prompt:
-            messages = kwargs.get("messages")
-            if isinstance(messages, list) and messages:
-                last = messages[-1]
-                if isinstance(last, dict) and last.get("role") == "user":
-                    prompt = str(last.get("content", ""))
-        if prompt:
-            _api_bg(self._base, "observe", self._payload("prompt_submit", {
-                "prompt": _trunc_str(prompt, 8000),
-            }))
+        try:
+            prompt = kwargs.get("prompt", "")
+            if not prompt:
+                messages = kwargs.get("messages")
+                if isinstance(messages, list) and messages:
+                    last = messages[-1]
+                    if isinstance(last, dict) and last.get("role") == "user":
+                        prompt = str(last.get("content", ""))
+            if prompt:
+                sess = kwargs.get("session_id") or self._session_id
+                _api_bg(self._base, "observe", self._payload("prompt_submit", {
+                    "prompt": _trunc_str(prompt, 8000),
+                }, session_id=sess))
+        except Exception as exc:
+            logger.debug("agentmemory pre_llm_call failed: %s", exc)
 
     def post_llm_call(self, response: Any = None, **kwargs: Any) -> None:
         # Anything agentmemory wants from the response side arrives via
@@ -472,40 +539,57 @@ class AgentMemoryProvider(MemoryProvider):
         pass
 
     def subagent_start(self, **kwargs: Any) -> None:
-        _api_bg(self._base, "observe", self._payload("subagent_start", {
-            "agent_id": str(kwargs.get("subagent_id", kwargs.get("agent_id", ""))),
-            "agent_type": str(kwargs.get("role", kwargs.get("agent_type", "subagent"))),
-            "task": _trunc_str(kwargs.get("task", kwargs.get("goal", "")), 4000),
-        }))
+        try:
+            sess = kwargs.get("session_id") or self._session_id
+            _api_bg(self._base, "observe", self._payload("subagent_start", {
+                "agent_id": str(kwargs.get("subagent_id", kwargs.get("agent_id", ""))),
+                "agent_type": str(kwargs.get("role", kwargs.get("agent_type", "subagent"))),
+                "task": _trunc_str(kwargs.get("task", kwargs.get("goal", "")), 4000),
+            }, session_id=sess))
+        except Exception as exc:
+            logger.debug("agentmemory subagent_start failed: %s", exc)
 
     def subagent_stop(self, **kwargs: Any) -> None:
-        _api_bg(self._base, "observe", self._payload("subagent_stop", {
-            "agent_id": str(kwargs.get("subagent_id", kwargs.get("agent_id", ""))),
-            "agent_type": str(kwargs.get("role", kwargs.get("agent_type", "subagent"))),
-            "last_message": _trunc_str(kwargs.get("summary", kwargs.get("last_message", "")), 4000),
-        }))
+        try:
+            sess = kwargs.get("session_id") or self._session_id
+            _api_bg(self._base, "observe", self._payload("subagent_stop", {
+                "agent_id": str(kwargs.get("subagent_id", kwargs.get("agent_id", ""))),
+                "agent_type": str(kwargs.get("role", kwargs.get("agent_type", "subagent"))),
+                "last_message": _trunc_str(kwargs.get("summary", kwargs.get("last_message", "")), 4000),
+            }, session_id=sess))
+        except Exception as exc:
+            logger.debug("agentmemory subagent_stop failed: %s", exc)
 
     def on_session_finalize(self, **kwargs: Any) -> None:
-        _api(self._base, "session/end", {
-            "sessionId": kwargs.get("session_id", self._session_id),
-        })
+        try:
+            sess = kwargs.get("session_id") or self._session_id
+            _api(self._base, "session/end", {
+                "sessionId": sess,
+            })
+        except Exception as exc:
+            logger.debug("agentmemory on_session_finalize failed: %s", exc)
 
     def on_session_reset(self, **kwargs: Any) -> None:
-        # A /new-style reset kills the old session's context; marks it ended
-        # so agentmemory doesn't keep the dead session open.
-        _api_bg(self._base, "session/end", {
-            "sessionId": kwargs.get("old_session_id", kwargs.get("session_id", self._session_id)),
-        })
+        try:
+            sess = kwargs.get("old_session_id", kwargs.get("session_id", self._session_id))
+            _api_bg(self._base, "session/end", {
+                "sessionId": sess,
+            })
+        except Exception as exc:
+            logger.debug("agentmemory on_session_reset failed: %s", exc)
 
     def agent_loop_stopped(self, **kwargs: Any) -> None:
         pass
 
-    def _payload(self, hook_type: str, data: dict) -> dict:
+    def _payload(self, hook_type: str, data: dict, session_id: str = "", cwd: str = "") -> dict:
+        sess = session_id or self._session_id
+        effective_cwd = cwd or self._cwd
+        project = self._project or _resolve_project(effective_cwd)
         return {
             "hookType": hook_type,
-            "sessionId": getattr(self, "_session_id", ""),
-            "project": self._project,
-            "cwd": getattr(self, "_cwd", os.getcwd()),
+            "sessionId": sess,
+            "project": project,
+            "cwd": effective_cwd,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "data": data,
         }
